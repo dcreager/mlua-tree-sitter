@@ -102,16 +102,6 @@ impl Module for Lua {
     }
 }
 
-// Replace this with a call to Tree::into_raw once a >0.28.8 release is cut.
-fn tree_into_raw(tree: Tree) -> *mut c_void {
-    // The Lua wrapper will take ownership of the tree.
-    let tree = std::mem::ManuallyDrop::new(tree);
-    // Pull some shenanigans to access the tree's TSTree pointer.
-    type RawTree = std::ptr::NonNull<c_void>;
-    let raw_tree: RawTree = unsafe { std::mem::transmute(tree) };
-    raw_tree.as_ptr()
-}
-
 /// An extension trait that lets you combine a [`tree_sitter::Tree`] with the source code that it
 /// was parsed from.
 pub trait WithSource {
@@ -122,11 +112,11 @@ pub trait WithSource {
 /// The combination of a [`tree_sitter::Tree`] with the source code that it was parsed from.  This
 /// type implements the [`mlua::IntoLua`] trait, so you can push it onto a Lua stack.
 pub struct TreeWithSource<'a> {
-    pub tree: tree_sitter::Tree,
+    pub tree: Tree,
     pub src: &'a [u8],
 }
 
-impl WithSource for tree_sitter::Tree {
+impl WithSource for Tree {
     fn with_source<'a>(self, src: &'a [u8]) -> TreeWithSource<'a> {
         TreeWithSource {
             tree: self,
@@ -154,7 +144,7 @@ impl mlua::IntoLua<'_> for TreeWithSource<'_> {
         }
 
         let tree =
-            mlua::Value::LightUserData(mlua::LightUserData(tree_into_raw(self.tree.clone())));
+            mlua::Value::LightUserData(mlua::LightUserData(self.tree.into_raw() as *mut c_void));
         let src_len = self.src.len();
         let src = mlua::Value::LightUserData(mlua::LightUserData(self.src.as_ptr() as *mut _));
         let load = unsafe { l.create_c_function(load_tree) }?;
