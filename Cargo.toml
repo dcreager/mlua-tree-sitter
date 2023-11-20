@@ -10,6 +10,9 @@ description = """
 Provides access to tree-sitter parse trees in Lua code managed by the mlua crate.
 """
 
+[package.metadata.docs.rs]
+features = ["mlua/lua54", "mlua/vendored"]
+
 [patch.crates-io]
 # TODO: Revert to a regular versioned dependency once tree-sitter#2773 has been
 # merged.
@@ -24,4 +27,5 @@ tree-sitter = { version = "0.20" }
 cc = "1.0"
 
 [dev-dependencies]
+anyhow = { version = "1.0" }
 tree-sitter-python = { version = "0.20" }
