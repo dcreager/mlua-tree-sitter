@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["Douglas Creager <dcreager@dcreager.net>"]
 edition = "2021"
 repository = "https://github.com/dcreager/mlua-tree-sitter"
+readme = "README.md"
 license = "MIT"
 links = "ltreesitter"
 description = """
