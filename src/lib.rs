@@ -72,6 +72,8 @@
 
 use std::ffi::c_char;
 use std::ffi::c_void;
+use std::ops::Deref;
+use std::ops::DerefMut;
 
 use mlua::Lua;
 use tree_sitter::Tree;
@@ -125,6 +127,8 @@ impl WithSource for Tree {
     }
 }
 
+// We can implement this for any lifetime because Lua takes ownership of the tree, and will free it
+// when the Lua wrapper is garbage-collected; and ltreesitter makes a copy of the source code.
 impl mlua::IntoLua<'_> for TreeWithSource<'_> {
     fn into_lua(self, l: &Lua) -> Result<mlua::Value, mlua::Error> {
         unsafe extern "C-unwind" fn load_tree(l: *mut mlua::lua_State) -> i32 {
@@ -152,17 +156,68 @@ impl mlua::IntoLua<'_> for TreeWithSource<'_> {
     }
 }
 
+// A wrapper around a [`tree_sitter::Node`].  This only exists to get around Rust's orphan rules,
+// so that we can implement the [`mlua::FromLua`] trait.
+pub struct TSNode<'n>(pub tree_sitter::Node<'n>);
+
+impl<'n> Deref for TSNode<'n> {
+    type Target = tree_sitter::Node<'n>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'n> DerefMut for TSNode<'n> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+// We can only implement this for the 'lua lifetime, to express that the returned Rust value is
+// only valid while the Lua interpreter is live.
+impl<'lua> mlua::FromLua<'lua> for TSNode<'lua> {
+    fn from_lua(value: mlua::Value<'lua>, lua: &'lua Lua) -> Result<Self, mlua::Error> {
+        // Use some trickery to use ltreesitter's C accessor to get at the tree-sitter
+        // Node.  Return it back up to the "safe" mlua code as a light userdata.
+        unsafe extern "C-unwind" fn get_node(l: *mut mlua::lua_State) -> i32 {
+            extern "C-unwind" {
+                fn ltreesitter_check_node(l: *mut mlua::lua_State, index: u32) -> *mut c_void;
+            }
+            let ltreesitter_node = ltreesitter_check_node(l, 1);
+            mlua::ffi::lua_pushlightuserdata(l, ltreesitter_node);
+            1
+        }
+
+        #[repr(C)]
+        struct LTreeSitterNode {
+            node: tree_sitter::ffi::TSNode,
+        }
+
+        let get_node = unsafe { lua.create_c_function(get_node) }?;
+        let mlua::LightUserData(ltreesitter_node) = get_node.call(value)?;
+        let ltreesitter_node = ltreesitter_node as *mut LTreeSitterNode;
+        Ok(TSNode(unsafe {
+            tree_sitter::Node::from_raw((*ltreesitter_node).node)
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     trait CheckLua {
+        fn call<'lua, R: mlua::FromLuaMulti<'lua>>(&'lua self, chunk: &str) -> R;
         fn check(&self, chunk: &str);
     }
 
     impl CheckLua for Lua {
+        fn call<'lua, R: mlua::FromLuaMulti<'lua>>(&'lua self, chunk: &str) -> R {
+            self.load(chunk).set_name("test chunk").call(()).unwrap()
+        }
+
         fn check(&self, chunk: &str) {
-            self.load(chunk).set_name("test chunk").exec().unwrap()
+            self.call(chunk)
         }
     }
 
@@ -184,5 +239,21 @@ mod tests {
               assert(root:type() == "module", "expected module as root of tree")
             "#,
         );
+    }
+
+    #[test]
+    fn can_return_nodes_back_to_rust() {
+        let code = br#"
+          def double(x):
+              return x * 2
+        "#;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(tree_sitter_python::language()).unwrap();
+        let parsed = parser.parse(code, None).unwrap();
+        let l = Lua::new();
+        l.open_ltreesitter().unwrap();
+        l.globals().set("parsed", parsed.with_source(code)).unwrap();
+        let root: TSNode = l.call(r#" return parsed:root() "#);
+        assert_eq!("module", root.kind());
     }
 }
