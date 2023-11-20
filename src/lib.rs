@@ -156,6 +156,52 @@ impl mlua::IntoLua<'_> for TreeWithSource<'_> {
     }
 }
 
+// We can only implement this for the 'lua lifetime, to express that the returned Rust value is
+// only valid while the Lua interpreter is live.
+impl<'lua> mlua::FromLua<'lua> for TreeWithSource<'lua> {
+    fn from_lua(value: mlua::Value<'lua>, lua: &'lua Lua) -> Result<Self, mlua::Error> {
+        // Use some trickery to use ltreesitter's C accessor to get at the tree-sitter
+        // Tree.  Return it back up to the "safe" mlua code as a light userdata.
+        unsafe extern "C-unwind" fn get_tree(l: *mut mlua::lua_State) -> i32 {
+            extern "C-unwind" {
+                fn ltreesitter_check_tree_arg(l: *mut mlua::lua_State, index: u32) -> *mut c_void;
+            }
+            let ltreesitter_tree = ltreesitter_check_tree_arg(l, 1);
+            mlua::ffi::lua_pushlightuserdata(l, ltreesitter_tree);
+            1
+        }
+
+        #[repr(C)]
+        struct LTreeSitterSourceText {
+            length: usize,
+            text: u8, // this is a VLA down in C
+        }
+
+        #[repr(C)]
+        struct LTreeSitterTree {
+            tree: *mut tree_sitter::ffi::TSTree,
+            source: *const LTreeSitterSourceText,
+        }
+
+        let get_tree = unsafe { lua.create_c_function(get_tree) }?;
+        let mlua::LightUserData(ltreesitter_tree) = get_tree.call(value)?;
+        let ltreesitter_tree = ltreesitter_tree as *mut LTreeSitterTree;
+        unsafe {
+            let ltreesitter_source = (*ltreesitter_tree).source;
+            let src = std::slice::from_raw_parts(
+                &(*ltreesitter_source).text,
+                (*ltreesitter_source).length,
+            );
+            let tree = (*ltreesitter_tree).tree;
+            // The Rust tree-sitter bindings want to take ownership of the tree, so we need to make
+            // a copy first.
+            let tree = tree_sitter::ffi::ts_tree_copy(tree);
+            let tree = tree_sitter::Tree::from_raw(tree);
+            Ok(TreeWithSource { tree, src })
+        }
+    }
+}
+
 // A wrapper around a [`tree_sitter::Node`].  This only exists to get around Rust's orphan rules,
 // so that we can implement the [`mlua::FromLua`] trait.
 pub struct TSNode<'n>(pub tree_sitter::Node<'n>);
@@ -239,6 +285,23 @@ mod tests {
               assert(root:type() == "module", "expected module as root of tree")
             "#,
         );
+    }
+
+    #[test]
+    fn can_return_trees_back_to_rust() {
+        let code = br#"
+          def double(x):
+              return x * 2
+        "#;
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(tree_sitter_python::language()).unwrap();
+        let parsed = parser.parse(code, None).unwrap();
+        let l = Lua::new();
+        l.open_ltreesitter().unwrap();
+        l.globals().set("parsed", parsed.with_source(code)).unwrap();
+        let tws: TreeWithSource = l.call(r#" return parsed "#);
+        assert_eq!(code, tws.src);
+        assert_eq!("module", tws.tree.root_node().kind());
     }
 
     #[test]
