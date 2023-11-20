@@ -1,0 +1,10 @@
+[package]
+name = "mlua-tree-sitter"
+version = "0.0.0"
+authors = ["Douglas Creager <dcreager@dcreager.net>"]
+edition = "2021"
+repository = "https://github.com/dcreager/mlua-tree-sitter"
+license = "MIT"
+description = """
+Provides access to tree-sitter parse trees in Lua code managed by the mlua crate.
+"""
