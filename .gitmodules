@@ -1,0 +1,3 @@
+[submodule "deps/ltreesitter"]
+	path = deps/ltreesitter
+	url = https://github.com/euclidianAce/ltreesitter
